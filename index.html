@@ -1,0 +1,859 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>黑白盗贼 - The Thief Game</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Custom CSS for the black and white theme and canvas */
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700;800&display=swap');
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f3f4f6;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            margin: 0;
+            overflow: hidden; /* Prevent body scrolling */
+        }
+        #gameCanvas {
+            border: 2px solid #000;
+            background-color: #fff;
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.2), 0 4px 6px -2px rgba(0, 0, 0, 0.1);
+        }
+        .info-box {
+            width: 1280px;
+            margin-bottom: 1rem;
+            display: flex;
+            justify-content: center; /* Center the button */
+            align-items: center;
+        }
+        .steal-button {
+            padding: 0.5rem 1.5rem;
+            border-radius: 0.5rem;
+            font-weight: bold;
+            transition: all 0.2s;
+            cursor: pointer;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+        }
+        .steal-button-disabled {
+            background-color: #ddd;
+            color: #555;
+            border: 2px solid #aaa;
+        }
+        .steal-button-ready {
+            background-color: #000;
+            color: #fff;
+            border: 2px solid #000;
+        }
+        .steal-button-active {
+            background-color: #3b82f6; /* Blue for active stealing */
+            color: #fff;
+            border: 2px solid #1d4ed8;
+            animation: pulse 0.5s infinite alternate;
+        }
+        @keyframes pulse {
+            from { transform: scale(1); opacity: 1; }
+            to { transform: scale(1.05); opacity: 0.9; }
+        }
+
+        /* Game Over Modal Styling */
+        #gameOverModal {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            /* 确保在显示时使用 flex，隐藏时使用 hidden 类 (display: none) */
+            background-color: rgba(0, 0, 0, 0.8);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+        }
+        /* Tailwind 'hidden' class sets display: none, overriding display: flex */
+        .hidden {
+            display: none !important;
+        }
+
+        .modal-content {
+            background-color: #fff;
+            padding: 3rem;
+            border-radius: 1rem;
+            text-align: center;
+            border: 4px solid #000;
+        }
+        .modal-title {
+            font-size: 2.5rem;
+            font-weight: bold;
+            color: #c00;
+        }
+        .modal-score {
+            font-size: 1.5rem;
+            margin: 1rem 0;
+            color: #333;
+        }
+        .modal-button {
+            background-color: #000;
+            color: #fff;
+            padding: 0.75rem 2rem;
+            border-radius: 0.5rem;
+            font-weight: bold;
+            margin-top: 1.5rem;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+        .modal-button:hover {
+            background-color: #333;
+        }
+
+    </style>
+</head>
+<body>
+
+<div class="flex flex-col items-center p-4">
+    <!-- Score Display (Top Center) -->
+    <div class="text-3xl font-extrabold mb-4">
+        <span class="text-gray-700">得分:</span>
+        <span id="stolenMoney" class="text-red-600">0</span>
+    </div>
+
+    <!-- Control Panel -->
+    <div class="info-box">
+        <button id="stealButton" class="steal-button steal-button-disabled" disabled>
+            (按住空格) 偷窃
+        </button>
+    </div>
+
+    <!-- Game Canvas -->
+    <canvas id="gameCanvas" width="1280" height="920"></canvas>
+
+    <!-- Game Over Modal -->
+    <div id="gameOverModal" class="hidden">
+        <div class="modal-content">
+            <div class="modal-title">游戏失败！</div>
+            <div class="modal-score">您偷窃了 $<span id="finalScore">0</span>。</div>
+            <div class="modal-button" id="restartButton">重新开始 (R)</div>
+        </div>
+    </div>
+</div>
+
+
+<script type="module">
+    // =================================================================
+    // Firebase Setup and Authentication (Mandatory for Canvas Environment)
+    // =================================================================
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+    import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+    import { getFirestore, doc, setDoc, getDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+    let db = null;
+    let auth = null;
+    let userId = null;
+    const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+    const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+
+    try {
+        const app = initializeApp(firebaseConfig);
+        db = getFirestore(app);
+        auth = getAuth(app);
+
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        if (initialAuthToken) {
+            signInWithCustomToken(auth, initialAuthToken).then(userCredential => {
+                console.log("Firebase signed in with custom token.");
+            }).catch(error => {
+                console.error("Custom token sign-in failed. Falling back to anonymous.", error);
+                signInAnonymously(auth);
+            });
+        } else {
+            signInAnonymously(auth);
+        }
+
+        onAuthStateChanged(auth, (user) => {
+            if (user) {
+                userId = user.uid;
+                console.log("User ID ready:", userId);
+            } else {
+                userId = crypto.randomUUID();
+                console.log("Anonymous sign-in or fallback User ID ready:", userId);
+            }
+        });
+
+    } catch (e) {
+        console.error("Firebase Initialization Failed:", e);
+    }
+
+    async function saveScore(score) {
+        if (!db || !userId) {
+            console.warn("Firestore or User ID not ready. Score not saved locally.");
+            return;
+        }
+
+        const highScoresPath = `artifacts/${appId}/public/data/highScores`;
+        const docRef = doc(db, highScoresPath, userId);
+
+        try {
+            const docSnap = await getDoc(docRef);
+            let currentHighScore = 0;
+            if (docSnap.exists()) {
+                currentHighScore = docSnap.data().score || 0;
+            }
+
+            if (score > currentHighScore) {
+                await setDoc(docRef, {
+                    userId: userId,
+                    score: score,
+                    timestamp: new Date().toISOString()
+                });
+                console.log("New high score saved to Firestore:", score);
+            } else {
+                console.log("Current score is not a high score. Did not save.");
+            }
+
+        } catch (error) {
+            console.error("Error saving score to Firestore:", error);
+        }
+    }
+
+    // =================================================================
+    // Game Logic
+    // =================================================================
+
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    const W = canvas.width;
+    const H = canvas.height;
+
+    // UI Elements
+    const stolenMoneyEl = document.getElementById('stolenMoney');
+    const stealButton = document.getElementById('stealButton');
+    const gameOverModal = document.getElementById('gameOverModal');
+    const finalScoreEl = document.getElementById('finalScore');
+    const restartButton = document.getElementById('restartButton');
+
+    // Game Constants
+    const THIEF_RADIUS = 15;
+    const NPC_SIZE = 25;
+    const SPAWN_MARGIN = NPC_SIZE * 1.5; // 增大 NPC 初始生成范围
+    const MAX_NPC_SPEED_BASE = 1.0; // 基础速度 (Score 0)
+    const MAX_NPC_SPEED_MAX = 3.0; // 最大速度
+    const SPAWN_INTERVAL = 90; // frames (减少间隔，提高生成频率)
+    const STEAL_TIME_MAX = 500; // 5 seconds in ms
+    const GUARD_VISION_RANGE = 200;
+    const GUARD_VISION_ANGLE_DEG = 60; // Total angle
+
+    // Rich pedestrian and color settings
+    const RICH_PEDESTRIAN_CHANCE = 0.15; // 15% chance to spawn rich pedestrian
+    const RICH_PEDESTRIAN_COLOR = '#10b981'; // Green for rich
+    const NORMAL_PEDESTRIAN_COLOR = '#3b82f6'; // Blue for normal
+    const GUARD_COLOR = '#c00'; // Red for guard
+    const RICH_PEDESTRIAN_POINTS = 150;
+    const NORMAL_PEDESTRIAN_POINTS = 50;
+
+    // 8-way movement vectors
+    const DIRECTIONS = [
+        { dx: 0, dy: -1 }, // N (Index 0)
+        { dx: 0.707, dy: -0.707 }, // NE (Index 1)
+        { dx: 1, dy: 0 }, // E (Index 2)
+        { dx: 0.707, dy: 0.707 }, // SE (Index 3)
+        { dx: 0, dy: 1 }, // S (Index 4)
+        { dx: -0.707, dy: 0.707 }, // SW (Index 5)
+        { dx: -1, dy: 0 }, // W (Index 6)
+        { dx: -0.707, dy: -0.707 } // NW (Index 7)
+    ];
+
+
+    // Game State
+    let thief = { x: W / 2, y: H / 2, dx: 0, dy: 0, speed: 3 };
+    let npcs = [];
+    let score = 0;
+    let frameCount = 0;
+    let gameOver = false;
+    let keys = {};
+
+    let isStealing = false;
+    let stealProgress = 0;
+    let targetPedestrian = null;
+    let detectionSource = null;
+    let animationFrameId = null;
+
+    // =================================================================
+    // Difficulty Scaling Functions
+    // =================================================================
+
+    /**
+     * Calculates guard speed, increasing with score (1.0 -> 3.0).
+     */
+    function calculateGuardSpeed(currentScore) {
+        const scalePoint = 2000; // Score required for max speed
+        const speedRange = MAX_NPC_SPEED_MAX - MAX_NPC_SPEED_BASE;
+
+        const factor = Math.min(currentScore / scalePoint, 1);
+
+        return MAX_NPC_SPEED_BASE + (speedRange * factor);
+    }
+
+    /**
+     * Calculates the chance per frame for a guard to turn towards the thief.
+     */
+    function calculateGuardTurnChance(currentScore) {
+        const maxScore = 5000;
+        const baseChance = 0.0005; // Base turn chance (0.05%)
+        const maxChance = 0.005; // Max turn chance (0.5%)
+
+        const chanceRange = maxChance - baseChance;
+
+        const factor = Math.min(currentScore / maxScore, 1);
+
+        return baseChance + (chanceRange * factor);
+    }
+
+    // =================================================================
+    // Helper and NPC Class
+    // =================================================================
+
+    /** Calculates distance between two points */
+    function dist(x1, y1, x2, y2) {
+        return Math.hypot(x1 - x2, y1 - y2);
+    }
+
+    // NPC Class
+    class NPC {
+        constructor(type) {
+            this.type = type; // 'pedestrian' or 'guard'
+
+            // Determine civilian type and color
+            this.isRich = type === 'pedestrian' && Math.random() < RICH_PEDESTRIAN_CHANCE;
+            this.color = type === 'guard' ? GUARD_COLOR : (this.isRich ? RICH_PEDESTRIAN_COLOR : NORMAL_PEDESTRIAN_COLOR);
+
+            this.radius = NPC_SIZE / 2;
+
+            // Determine spawn edge: Left (0) or Right (1)
+            let spawnEdge = Math.floor(Math.random() * 2);
+
+            // Initial direction index: East (2) or West (6)
+            this.currentDirectionIndex = spawnEdge === 0 ? 2 : 6;
+
+            if (spawnEdge === 0) { // Left spawn, moving East (2)
+                this.x = -SPAWN_MARGIN;
+                this.y = Math.random() * H;
+            } else { // Right spawn, moving West (6)
+                this.x = W + SPAWN_MARGIN;
+                this.y = Math.random() * H;
+            }
+
+            // Speed calculation
+            let baseSpeed = type === 'guard' ? calculateGuardSpeed(score) : MAX_NPC_SPEED_BASE;
+            this.speed = baseSpeed + Math.random() * (MAX_NPC_SPEED_BASE * 0.5);
+            this.speed = Math.min(this.speed, MAX_NPC_SPEED_MAX);
+
+            this.updateDirectionVector();
+
+            this.state = 'entering'; // NEW initial state: only horizontal movement
+            this.stopDuration = 0;
+            this.stopCheckFrame = frameCount + Math.floor(Math.random() * 600) + 600;
+        }
+
+        /** Updates the velocity vector to match the current 8-way direction index */
+        updateDirectionVector() {
+            const dir = DIRECTIONS[this.currentDirectionIndex];
+            this.dx = dir.dx * this.speed;
+            this.dy = dir.dy * this.speed;
+        }
+
+        /** Snaps the current direction to the closest one of the 8 predefined vectors */
+        snapToClosestDirection(targetAngleRad) {
+            let closestIndex = 0;
+            let minAngleDiff = 2 * Math.PI + 1; // Start with a value larger than 2*PI
+
+            for (let i = 0; i < DIRECTIONS.length; i++) {
+                const dir = DIRECTIONS[i];
+                const dirAngle = Math.atan2(dir.dy, dir.dx);
+
+                let diff = Math.abs(targetAngleRad - dirAngle);
+                if (diff > Math.PI) {
+                    diff = 2 * Math.PI - diff; // Handle wrap-around
+                }
+
+                if (diff < minAngleDiff) {
+                    minAngleDiff = diff;
+                    closestIndex = i;
+                }
+            }
+
+            this.currentDirectionIndex = closestIndex;
+            this.updateDirectionVector();
+        }
+
+        /** Turns the NPC towards the thief's position, snapping to the closest 8-way direction */
+        turnTowardsThief() {
+            const angleToThief = Math.atan2(thief.y - this.y, thief.x - this.x);
+            this.snapToClosestDirection(angleToThief);
+        }
+
+
+        update() {
+            // --- 0. Expiration Check (Universal) ---
+            // If NPC is far off screen, remove it.
+            if (this.x < -2 * NPC_SIZE || this.x > W + 2 * NPC_SIZE || this.y < -2 * NPC_SIZE || this.y > H + 2 * NPC_SIZE) {
+                return 'expired';
+            }
+
+            if (this.state === 'entering') {
+                // Move only horizontally (dy is 0 in this state, dx is set in constructor)
+                this.x += this.dx;
+
+                // Check transition to walking: center is fully inside canvas [0, W]
+                if (this.x > this.radius && this.x < W - this.radius) {
+                    this.state = 'walking';
+
+                    // Recalculate speed (needed for guards as speed scales with score)
+                    let baseSpeed = this.type === 'guard' ? calculateGuardSpeed(score) : MAX_NPC_SPEED_BASE;
+                    this.speed = baseSpeed + Math.random() * (MAX_NPC_SPEED_BASE * 0.5);
+                    this.speed = Math.min(this.speed, MAX_NPC_SPEED_MAX);
+
+                    // Choose a new random 8-way direction that does NOT immediately point back out
+                    let excludedIndices;
+                    if (this.dx > 0) { // Entered from Left (moving East) -> Exclude W, SW, NW (6, 5, 7)
+                        excludedIndices = [5, 6, 7];
+                    } else { // Entered from Right (moving West) -> Exclude E, NE, SE (1, 2, 3)
+                        excludedIndices = [1, 2, 3];
+                    }
+
+                    let validDirections = DIRECTIONS.map((_, i) => i).filter(i => !excludedIndices.includes(i));
+
+                    this.currentDirectionIndex = validDirections[Math.floor(Math.random() * validDirections.length)];
+                    this.updateDirectionVector(); // Apply new speed and direction
+                }
+
+            } else if (this.state === 'walking') {
+                this.x += this.dx;
+                this.y += this.dy;
+
+                // --- 1. Boundary Reflection ---
+                let turned = false;
+                let targetDx = this.dx;
+                let targetDy = this.dy;
+                let hitBoundary = false;
+
+                if (this.x <= this.radius || this.x >= W - this.radius) {
+                    targetDx = -this.dx;
+                    hitBoundary = true;
+                }
+                if (this.y <= this.radius || this.y >= H - this.radius) {
+                    targetDy = -this.dy;
+                    hitBoundary = true;
+                }
+
+                if (hitBoundary) {
+                    const reflectedAngle = Math.atan2(targetDy, targetDx);
+                    this.snapToClosestDirection(reflectedAngle);
+                    turned = true;
+                }
+
+                // --- 2. Civilian Stopping Logic ---
+                if (this.type === 'pedestrian' && frameCount > this.stopCheckFrame) {
+                    if (Math.random() < 0.1) {
+                        this.state = 'stopping';
+                        this.stopDuration = Math.random() * 180 + 120; // stop for 2-5 seconds
+                        this.dx = 0;
+                        this.dy = 0;
+                    }
+                    this.stopCheckFrame = frameCount + Math.floor(Math.random() * 600) + 600;
+                }
+
+                // --- 3. Civilian Wandering Logic (subtle random turn) ---
+                if (this.type === 'pedestrian' && Math.random() < 0.003) {
+                    const oldIndex = this.currentDirectionIndex;
+                    const change = Math.floor(Math.random() * 3) - 1; // -1, 0, or 1
+                    const newIndex = (oldIndex + change + 8) % 8;
+
+                    this.currentDirectionIndex = newIndex;
+                    this.updateDirectionVector();
+                }
+
+                // --- 4. Guard Turn Logic (Difficulty scaling) ---
+                if (this.type === 'guard' && !turned) {
+                    const turnChance = calculateGuardTurnChance(score);
+                    if (Math.random() < turnChance) {
+                        this.turnTowardsThief();
+                    }
+                }
+
+            } else if (this.state === 'stopping') {
+                this.stopDuration -= 1;
+                if (this.stopDuration <= 0) {
+                    this.state = 'walking';
+                    this.updateDirectionVector();
+                }
+            }
+
+            // --- 5. Guard Chasing Logic (Universal) ---
+            if (this.type === 'guard' && this.state === 'chasing') {
+                const angleToThief = Math.atan2(thief.y - this.y, thief.x - this.x);
+                const chaseSpeed = Math.min(this.speed * 1.5, MAX_NPC_SPEED_MAX);
+                this.dx = Math.cos(angleToThief) * chaseSpeed;
+                this.dy = Math.sin(angleToThief) * chaseSpeed;
+                this.x += this.dx;
+                this.y += this.dy;
+
+                if (dist(this.x, this.y, thief.x, thief.y) < THIEF_RADIUS + this.radius) {
+                    triggerGameOver('被警卫抓住了！');
+                }
+            }
+
+            return 'active';
+        }
+
+        draw() {
+            ctx.fillStyle = this.color;
+            ctx.beginPath();
+            ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.strokeStyle = '#000';
+            ctx.lineWidth = 1;
+            ctx.stroke();
+
+            if (this.type === 'guard' && this.state !== 'chasing' && this.state !== 'entering') {
+                this.drawVisionCone();
+            }
+        }
+
+        drawVisionCone() {
+            // Vision cone direction is based on current dx/dy
+            const coneCenterAngleRad = Math.atan2(this.dy, this.dx);
+            const halfAngleRad = (GUARD_VISION_ANGLE_DEG / 2) * (Math.PI / 180);
+
+            const startAngle = coneCenterAngleRad - halfAngleRad;
+            const endAngle = coneCenterAngleRad + halfAngleRad;
+
+            ctx.fillStyle = 'rgba(255, 0, 0, 0.1)';
+            ctx.beginPath();
+            ctx.moveTo(this.x, this.y);
+            ctx.arc(this.x, this.y, GUARD_VISION_RANGE, startAngle, endAngle);
+            ctx.closePath();
+            ctx.fill();
+
+            ctx.strokeStyle = 'rgba(255, 0, 0, 0.3)';
+            ctx.lineWidth = 1;
+            ctx.stroke();
+        }
+
+        /** Checks if the thief is within the vision cone */
+        isThiefVisible(tx, ty, range, totalAngleDeg) {
+            if (dist(this.x, this.y, tx, ty) > range) {
+                return false;
+            }
+
+            const angleToThiefRad = Math.atan2(ty - this.y, tx - this.x);
+            const forwardAngleRad = Math.atan2(this.dy, this.dx);
+
+            let diff = Math.abs(angleToThiefRad - forwardAngleRad);
+            if (diff > Math.PI) {
+                diff = 2 * Math.PI - diff;
+            }
+
+            const totalAngleRad = totalAngleDeg * (Math.PI / 180);
+
+            return diff <= (totalAngleRad / 2);
+        }
+    }
+
+    // Game Initialization
+    function initGame() {
+        // Key fix: Hide Game Over modal when resetting
+        gameOverModal.classList.add('hidden');
+
+        if (animationFrameId) {
+            cancelAnimationFrame(animationFrameId);
+        }
+
+        console.log("Game Resetting: Hiding Game Over modal and resetting state.");
+
+        thief = { x: W / 2, y: H / 2, dx: 0, dy: 0, speed: 3 };
+        npcs = [];
+        score = 0;
+        frameCount = 0;
+        gameOver = false;
+        keys = {};
+        isStealing = false;
+        stealProgress = 0;
+        targetPedestrian = null;
+        detectionSource = null;
+
+        stolenMoneyEl.textContent = score;
+
+        // Spawn initial NPCs
+        spawnNPC();
+        spawnNPC();
+        spawnNPC();
+
+        gameLoop();
+    }
+
+    // Game Loop
+    function gameLoop() {
+        if (gameOver) {
+            return;
+        }
+
+        update();
+        draw();
+
+        animationFrameId = requestAnimationFrame(gameLoop);
+    }
+
+    // Update Game State
+    function update() {
+        frameCount++;
+
+        // 1. Thief Movement
+        thief.x += thief.dx;
+        thief.y += thief.dy;
+
+        thief.x = Math.max(THIEF_RADIUS, Math.min(W - THIEF_RADIUS, thief.x));
+        thief.y = Math.max(THIEF_RADIUS, Math.min(H - THIEF_RADIUS, thief.y));
+
+        // 2. NPC Spawning
+        if (frameCount % SPAWN_INTERVAL === 0) {
+            spawnNPC(Math.random() < 0.75 ? 'pedestrian' : 'guard');
+        }
+
+        // 3. NPC Update and Cleanup
+        const newNpcs = [];
+        let possibleTarget = null;
+
+        for (let i = 0; i < npcs.length; i++) {
+            const npc = npcs[i];
+            const status = npc.update();
+
+            if (status === 'expired') {
+                continue;
+            }
+
+            // Check stealing target
+            if (npc.type === 'pedestrian' && dist(thief.x, thief.y, npc.x, npc.y) < THIEF_RADIUS + npc.radius + 10) {
+                // Check if thief is behind the pedestrian (angle difference > 135 degrees)
+                const angleToThief = Math.atan2(thief.y - npc.y, thief.x - npc.x);
+                const npcMovementAngle = Math.atan2(npc.dy, npc.dx);
+
+                let angleDiff = Math.abs(angleToThief - npcMovementAngle);
+                if (angleDiff > Math.PI) {
+                    angleDiff = 2 * Math.PI - angleDiff;
+                }
+                if (angleDiff > 2.356) { // ~135 degrees in radians
+                    possibleTarget = npc;
+                }
+            }
+
+            // Check if any guard detects the thief (only if not 'entering')
+            if (npc.type === 'guard' && npc.state !== 'chasing' && npc.state !== 'entering' &&
+                npc.isThiefVisible(thief.x, thief.y, GUARD_VISION_RANGE, GUARD_VISION_ANGLE_DEG)) {
+                if (isStealing) {
+                    detectionSource = npc;
+                    npc.state = 'chasing';
+                    triggerGameOver('在警卫面前偷窃！');
+                    return;
+                }
+                if (possibleTarget) possibleTarget = null; // Guard is watching, cannot steal
+            }
+
+            newNpcs.push(npc);
+        }
+        npcs = newNpcs;
+
+        // 4. Stealing Logic
+        updateStealing(possibleTarget);
+    }
+
+    /**
+     * Spawns a new NPC.
+     * @param {string} type 'pedestrian' or 'guard'
+     */
+    function spawnNPC(type) {
+        type = type || (Math.random() < 0.7 ? 'pedestrian' : 'guard');
+        npcs.push(new NPC(type));
+    }
+
+    // Drawing Function
+    function draw() {
+        // Clear canvas
+        ctx.fillStyle = '#fff';
+        ctx.fillRect(0, 0, W, H);
+
+        // Draw NPCs
+        npcs.forEach(npc => npc.draw());
+
+        // Draw Thief (Black)
+        ctx.fillStyle = '#000';
+        ctx.beginPath();
+        ctx.arc(thief.x, thief.y, THIEF_RADIUS, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Draw Steal Progress Bar
+        if (targetPedestrian && isStealing) {
+            const barWidth = 40;
+            const barHeight = 8;
+            const progressWidth = (stealProgress / STEAL_TIME_MAX) * barWidth;
+
+            ctx.fillStyle = '#ccc';
+            ctx.fillRect(targetPedestrian.x - barWidth / 2, targetPedestrian.y - targetPedestrian.radius - 20, barWidth, barHeight);
+
+            // Progress bar color based on target type
+            ctx.fillStyle = targetPedestrian.isRich ? '#facc15' : '#4CAF50';
+            ctx.fillRect(targetPedestrian.x - barWidth / 2, targetPedestrian.y - targetPedestrian.radius - 20, progressWidth, barHeight);
+
+            ctx.strokeStyle = '#000';
+            ctx.strokeRect(targetPedestrian.x - barWidth / 2, targetPedestrian.y - targetPedestrian.radius - 20, barWidth, barHeight);
+        }
+    }
+
+    // Stealing Logic
+    function updateStealing(possibleTarget) {
+        const stealIsReady = !!possibleTarget;
+        const isHoldingSteal = keys[' '];
+
+        // UI Update: Steal button highlight
+        if (isStealing) {
+            stealButton.className = 'steal-button steal-button-active';
+            stealButton.disabled = false;
+        } else if (stealIsReady) {
+            stealButton.className = 'steal-button steal-button-ready';
+            stealButton.disabled = false;
+        } else {
+            stealButton.className = 'steal-button steal-button-disabled';
+            stealButton.disabled = true;
+        }
+
+        // State Transitions
+        if (stealIsReady && isHoldingSteal) {
+            if (!isStealing) {
+                isStealing = true;
+                targetPedestrian = possibleTarget;
+                stealProgress = 0;
+            }
+
+            if (targetPedestrian === possibleTarget) {
+                stealProgress += 1000 / 60;
+            } else {
+                isStealing = true;
+                stealProgress = 0;
+                targetPedestrian = possibleTarget;
+            }
+
+            // Steal success check
+            if (stealProgress >= STEAL_TIME_MAX) {
+                // Reward points based on target type
+                const points = targetPedestrian.isRich ? RICH_PEDESTRIAN_POINTS : NORMAL_PEDESTRIAN_POINTS;
+                score += points;
+                stolenMoneyEl.textContent = score;
+
+                npcs = npcs.filter(n => n !== targetPedestrian);
+                isStealing = false;
+                stealProgress = 0;
+                targetPedestrian = null;
+            }
+
+        } else if (isStealing && !isHoldingSteal) {
+            // Stop stealing
+            isStealing = false;
+            stealProgress = 0;
+            targetPedestrian = null;
+        } else if (!stealIsReady) {
+            // Target moved out of range
+            isStealing = false;
+            stealProgress = 0;
+            targetPedestrian = null;
+        }
+    }
+
+    // Game Over Handler
+    function triggerGameOver(reason) {
+        // Set gameOver to true, gameLoop will stop in the next frame
+        gameOver = true;
+        console.log("GAME OVER:", reason, "Game loop stopped.");
+
+        if (detectionSource) {
+            detectionSource.dx = 0;
+            detectionSource.dy = 0;
+            detectionSource.state = 'stopping';
+        }
+
+        finalScoreEl.textContent = score;
+        // Display modal
+        gameOverModal.classList.remove('hidden');
+
+        saveScore(score);
+    }
+
+    // =================================================================
+    // Event Handlers
+    // =================================================================
+
+    function handleKeydown(e) {
+        keys[e.key] = true;
+        updateThiefDirection();
+
+        if (e.key === ' ' && stealButton.disabled === false) {
+            e.preventDefault();
+        }
+    }
+
+    function handleKeyup(e) {
+        keys[e.key] = false;
+        updateThiefDirection();
+    }
+
+    function handleRestartKey(e) {
+        if (e.key.toLowerCase() === 'r' && gameOver) {
+            initGame();
+        }
+    }
+
+    function updateThiefDirection() {
+        // Only process thief movement input if the game is not over
+        if (gameOver) return;
+
+        thief.dx = 0;
+        thief.dy = 0;
+
+        if (keys['w'] || keys['W'] || keys['ArrowUp']) {
+            thief.dy = -thief.speed;
+        }
+        if (keys['s'] || keys['S'] || keys['ArrowDown']) {
+            thief.dy = thief.speed;
+        }
+        if (keys['a'] || keys['A'] || keys['ArrowLeft']) {
+            thief.dx = -thief.speed;
+        }
+        if (keys['d'] || keys['D'] || keys['ArrowRight']) {
+            thief.dx = thief.speed;
+        }
+
+        // Normalize diagonal movement speed
+        if (thief.dx !== 0 && thief.dy !== 0) {
+            thief.dx *= 0.707;
+            thief.dy *= 0.707;
+        }
+    }
+
+    // =================================================================
+    // Global Event Listener Setup (Run once on load)
+    // =================================================================
+
+    document.addEventListener('keydown', handleKeydown);
+    document.addEventListener('keyup', handleKeyup);
+
+    restartButton.addEventListener('click', initGame);
+
+    document.addEventListener('keydown', handleRestartKey);
+
+    window.onload = initGame;
+
+</script>
+</body>
+</html>
